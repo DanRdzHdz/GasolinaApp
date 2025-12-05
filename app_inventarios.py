@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 st.title("⛽ Optimizador de Política de Inventarios")
-st.markdown("*Versión Ensemble - Predicciones más estables*")
+st.markdown("*Versión Ensemble v2.1 - Predicciones más estables*")
 st.markdown("---")
 
 # ============================================================
@@ -558,6 +558,9 @@ if ejecutar:
     st.markdown("---")
     st.subheader("🏆 Resultados de la Optimización")
     
+    # DEBUG INFO
+    st.info(f"🔍 **Debug:** Usando {n_redes} redes en ensemble. Semillas: {ensemble.semillas_usadas[:3]}...")
+    
     col_r1, col_r2, col_r3, col_r4 = st.columns(4)
     
     with col_r1:
@@ -571,9 +574,12 @@ if ejecutar:
     
     col_m1, col_m2 = st.columns(2)
     with col_m1:
-        st.metric("💰 Ganancia Promedio", f"${ganancia:,.2f}")
+        st.metric("💰 Ganancia Promedio/Día", f"${ganancia:,.2f}")
     with col_m2:
-        st.metric("💵 Flujo Promedio", f"${flujo:,.2f}")
+        st.metric("💵 Flujo Promedio/Día", f"${flujo:,.2f}")
+    
+    # DEBUG: Mostrar también totales
+    st.caption(f"📊 Debug: Ganancia total {dias_sim} días = ${ganancia * dias_sim:,.0f} | Flujo total = ${flujo * dias_sim:,.0f}")
     
     # ============================================================
     # GRÁFICAS
@@ -723,4 +729,4 @@ semilla_ga = {semilla_ga}
 
 # Footer
 st.markdown("---")
-st.markdown("*Desarrollado con Streamlit + scikit-learn | Versión Ensemble*")
+st.markdown("*Desarrollado con Streamlit + scikit-learn | Versión Ensemble v2.1*")
