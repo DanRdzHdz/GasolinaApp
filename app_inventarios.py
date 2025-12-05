@@ -1,57 +1,54 @@
 """
-OPTIMIZACIÓN DE POLÍTICA DE INVENTARIOS - VERSIÓN ENSEMBLE
-===========================================================
-- Ensemble de redes neuronales (más estable y honesto)
-- Promedia predicciones de múltiples redes
-- Algoritmo Genético con convergencia automática
+APLICACIÓN DE OPTIMIZACIÓN DE INVENTARIOS - ENSEMBLE
+=====================================================
+- Ensemble de redes neuronales (más estable)
+- Usuario elige: maximizar ganancia, flujo o balance
+- Subir Excel/CSV con datos
+- Algoritmo genético con convergencia automática
 """
 
+import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 import time
 import warnings
 warnings.filterwarnings('ignore')
 
 # ============================================================
-# CONFIGURACIÓN - MODIFICA AQUÍ
+# CONFIGURACIÓN DE LA PÁGINA
 # ============================================================
+st.set_page_config(
+    page_title="Optimizador de Inventarios",
+    page_icon="⛽",
+    layout="wide"
+)
 
-# Archivo de datos
-ARCHIVO_DATOS = 'datos_fase3.csv'
-
-# Objetivo: ajustar pesos
-W1 = 0.5  # Peso ganancia
-W2 = 0.5  # Peso flujo
-
-# Red Neuronal - ENSEMBLE
-ARQUITECTURA = (8, 8)
-ACTIVACION = 'relu'
-N_REDES_ENSEMBLE = 5  # Cuántas redes en el ensemble (3-5 recomendado)
-
-# Algoritmo Genético
-TAM_POBLACION = 40
-MAX_GENERACIONES = 300
-TOLERANCIA = 0.001
-PACIENCIA = 30
-SEMILLA_GA = 42
-
-# Simulación
-DIAS_SIMULACION = 30
-COSTO_COMPRA = 20.0
-H = 0.002
+st.title("⛽ Optimizador de Política de Inventarios")
+st.markdown("*Versión Ensemble - Predicciones más estables*")
+st.markdown("---")
 
 # ============================================================
 # FUNCIONES
 # ============================================================
 
-def cargar_y_preparar_datos(archivo):
-    """Carga y prepara los datos"""
-    df = pd.read_csv(archivo)
-    
+@st.cache_data
+def cargar_datos(archivo):
+    """Carga datos desde archivo subido"""
+    if archivo.name.endswith('.csv'):
+        df = pd.read_csv(archivo)
+    else:
+        df = pd.read_excel(archivo)
+    return df
+
+def preparar_datos(df):
+    """Prepara los datos para entrenamiento"""
+    df = df.copy()
     df['demanda_t_minus_1'] = df['demanda'].shift(1)
     df['demanda_t_plus_1'] = df['demanda'].shift(-1)
     df_clean = df.dropna().reset_index(drop=True)
@@ -70,7 +67,6 @@ def cargar_y_preparar_datos(archivo):
         'Y_val': Y[train_end:val_end],
         'X_test': X[val_end:],
         'Y_test': Y[val_end:],
-        'df': df,
         'df_clean': df_clean
     }
 
@@ -88,11 +84,8 @@ class EnsembleRedes:
         self.semillas_usadas = []
         self.mse_individual = []
     
-    def entrenar(self, X_train, Y_train, X_val, Y_val):
+    def entrenar(self, X_train, Y_train, X_val, Y_val, progress_callback=None):
         """Entrena el ensemble de redes"""
-        print(f"\n{'='*60}")
-        print(f"ENTRENANDO ENSEMBLE ({self.n_redes} redes)")
-        print(f"{'='*60}")
         
         # Ajustar scalers
         self.scaler_X.fit(X_train)
@@ -106,8 +99,6 @@ class EnsembleRedes:
         # Generar semillas aleatorias únicas
         rng = np.random.default_rng(int(time.time()))
         self.semillas_usadas = rng.integers(0, 10000, size=self.n_redes).tolist()
-        
-        print(f"Semillas: {self.semillas_usadas}\n")
         
         for i, semilla in enumerate(self.semillas_usadas):
             mlp = MLPRegressor(
@@ -129,15 +120,12 @@ class EnsembleRedes:
             mse = mean_squared_error(Y_val_scaled, Y_pred_scaled)
             self.mse_individual.append(mse)
             
-            print(f"  Red {i+1}/{self.n_redes} (semilla {semilla}): MSE={mse:.4f}")
+            if progress_callback:
+                progress_callback(i + 1, self.n_redes, semilla, mse)
         
         # Calcular MSE del ensemble
         Y_pred_ensemble = self._predecir_scaled(X_val_scaled)
         mse_ensemble = mean_squared_error(Y_val_scaled, Y_pred_ensemble)
-        
-        print(f"\n*** MSE ENSEMBLE (promedio): {mse_ensemble:.4f} ***")
-        print(f"    vs MSE individual promedio: {np.mean(self.mse_individual):.4f}")
-        print(f"    vs MSE mejor individual: {np.min(self.mse_individual):.4f}")
         
         return mse_ensemble
     
@@ -151,14 +139,12 @@ class EnsembleRedes:
         X_nuevo = np.array([[dia_semana, demanda_anterior, precio]])
         X_scaled = self.scaler_X.transform(X_nuevo)
         
-        # Obtener predicción de cada red
         predicciones = []
         for red in self.redes:
             Y_pred_scaled = red.predict(X_scaled)
             Y_pred = self.scaler_Y.inverse_transform(Y_pred_scaled.reshape(-1, 1)).ravel()[0]
             predicciones.append(Y_pred)
         
-        # Devolver promedio
         return np.mean(predicciones)
     
     def predecir_con_detalle(self, dia_semana, demanda_anterior, precio):
@@ -167,7 +153,7 @@ class EnsembleRedes:
         X_scaled = self.scaler_X.transform(X_nuevo)
         
         predicciones = []
-        for i, red in enumerate(self.redes):
+        for red in self.redes:
             Y_pred_scaled = red.predict(X_scaled)
             Y_pred = self.scaler_Y.inverse_transform(Y_pred_scaled.reshape(-1, 1)).ravel()[0]
             predicciones.append(Y_pred)
@@ -195,7 +181,6 @@ def simular_politica(ensemble, s, S, precio_venta,
     historico = []
     
     for dia in range(1, dias + 1):
-        # Predicción usando ensemble (promedio de todas las redes)
         demanda = ensemble.predecir(dia_semana, demanda_anterior, precio_venta)
         demanda = max(0, demanda)
         
@@ -235,13 +220,13 @@ def simular_politica(ensemble, s, S, precio_venta,
 
 
 class AlgoritmoGenetico:
-    """Algoritmo Genético con convergencia automática"""
+    """AG con parada por convergencia"""
     
     def __init__(self, ensemble, w1=0.5, w2=0.5,
-                 tam_poblacion=40, max_generaciones=300,
+                 tam_poblacion=40, max_generaciones=500,
                  tolerancia=0.001, paciencia=30,
                  prob_mutacion=0.1, prob_cruce=0.8,
-                 costo_compra=20.0, h=0.002, semilla=None):
+                 costo_compra=20.0, h=0.002, semilla_ga=None):
         
         self.ensemble = ensemble
         self.w1 = w1
@@ -255,8 +240,8 @@ class AlgoritmoGenetico:
         self.costo_compra = costo_compra
         self.h = h
         
-        if semilla is not None:
-            np.random.seed(semilla)
+        if semilla_ga is not None:
+            np.random.seed(semilla_ga)
         
         self.limites = {
             's': (1000, 8000),
@@ -265,7 +250,7 @@ class AlgoritmoGenetico:
         }
         
         self.historial = []
-    
+        
     def crear_individuo(self):
         return {
             's': np.random.uniform(*self.limites['s']),
@@ -310,15 +295,8 @@ class AlgoritmoGenetico:
                 individuo[key] = np.clip(individuo[key], *self.limites[key])
         return individuo
     
-    def optimizar(self):
+    def optimizar(self, progress_bar=None, status_text=None):
         """Ejecuta el AG con criterio de convergencia"""
-        print(f"\n{'='*60}")
-        print("EJECUTANDO ALGORITMO GENÉTICO")
-        print(f"{'='*60}")
-        print(f"Objetivo: w1={self.w1} (ganancia), w2={self.w2} (flujo)")
-        print(f"Convergencia: tolerancia={self.tolerancia}, paciencia={self.paciencia}")
-        print()
-        
         poblacion = [self.crear_individuo() for _ in range(self.tam_poblacion)]
         
         mejor_global = None
@@ -350,8 +328,10 @@ class AlgoritmoGenetico:
                 'mejor_flujo': mejor_flujo_global
             })
             
-            if (gen + 1) % 20 == 0:
-                print(f"  Gen {gen+1:3d}: Ganancia=${mejor_ganancia_global:,.0f}, Flujo=${mejor_flujo_global:,.0f}")
+            if progress_bar:
+                progress_bar.progress(min((gen + 1) / self.max_generaciones, 1.0))
+            if status_text:
+                status_text.text(f"Gen {gen+1} | Ganancia: ${mejor_ganancia_global:,.0f} | Flujo: ${mejor_flujo_global:,.0f}")
             
             cambio_relativo = abs(fitness_anterior - mejor_fitness_global) / (abs(fitness_anterior) + 1e-10)
             
@@ -363,7 +343,8 @@ class AlgoritmoGenetico:
             fitness_anterior = mejor_fitness_global
             
             if sin_mejora >= self.paciencia:
-                print(f"\n  ✓ CONVERGENCIA en generación {gen+1}")
+                if status_text:
+                    status_text.text(f"✓ Convergencia en generación {gen+1}")
                 break
             
             nueva_poblacion = [poblacion[mejor_idx].copy()]
@@ -382,212 +363,364 @@ class AlgoritmoGenetico:
         return mejor_global, mejor_ganancia_global, mejor_flujo_global, gen + 1
 
 
-def graficar_resultados(historial_ga, historico_sim, mejor, ensemble):
-    """Genera todas las gráficas"""
-    
-    fig = plt.figure(figsize=(16, 12))
-    
-    # 1. Evolución del GA - Ganancia
-    ax1 = fig.add_subplot(2, 3, 1)
-    df_hist = pd.DataFrame(historial_ga)
-    ax1.plot(df_hist['generacion'], df_hist['mejor_ganancia'], 'g-', linewidth=2)
-    ax1.set_xlabel('Generación')
-    ax1.set_ylabel('Ganancia ($)')
-    ax1.set_title('Evolución de Ganancia (AG)')
-    ax1.grid(True, alpha=0.3)
-    
-    # 2. Evolución del GA - Flujo
-    ax2 = fig.add_subplot(2, 3, 2)
-    ax2.plot(df_hist['generacion'], df_hist['mejor_flujo'], 'b-', linewidth=2)
-    ax2.set_xlabel('Generación')
-    ax2.set_ylabel('Flujo ($)')
-    ax2.set_title('Evolución de Flujo (AG)')
-    ax2.grid(True, alpha=0.3)
-    
-    # 3. MSE de cada red del ensemble
-    ax3 = fig.add_subplot(2, 3, 3)
-    colores = ['green' if mse == min(ensemble.mse_individual) else 'steelblue' 
-               for mse in ensemble.mse_individual]
-    bars = ax3.bar(range(len(ensemble.mse_individual)), ensemble.mse_individual, color=colores)
-    ax3.axhline(y=np.mean(ensemble.mse_individual), color='red', linestyle='--', 
-                label=f'Promedio: {np.mean(ensemble.mse_individual):.4f}')
-    ax3.set_xlabel('Red')
-    ax3.set_ylabel('MSE')
-    ax3.set_title(f'MSE de cada Red en Ensemble ({len(ensemble.redes)} redes)')
-    ax3.set_xticks(range(len(ensemble.mse_individual)))
-    ax3.set_xticklabels([f'Red {i+1}\n(s={s})' for i, s in enumerate(ensemble.semillas_usadas)], fontsize=8)
-    ax3.legend()
-    ax3.grid(True, alpha=0.3, axis='y')
-    
-    # 4. Simulación - Inventario
-    df_sim = pd.DataFrame(historico_sim)
-    
-    ax4 = fig.add_subplot(2, 3, 4)
-    ax4.plot(df_sim['dia'], df_sim['inventario'], 'b-', linewidth=2, marker='o', markersize=4)
-    ax4.axhline(y=mejor['s'], color='red', linestyle='--', linewidth=2, label=f"s={mejor['s']:,.0f}")
-    ax4.axhline(y=mejor['S'], color='green', linestyle='--', linewidth=2, label=f"S={mejor['S']:,.0f}")
-    ax4.set_xlabel('Día')
-    ax4.set_ylabel('Inventario (L)')
-    ax4.set_title('Nivel de Inventario')
-    ax4.legend()
-    ax4.grid(True, alpha=0.3)
-    
-    # 5. Demanda vs Ventas
-    ax5 = fig.add_subplot(2, 3, 5)
-    ax5.plot(df_sim['dia'], df_sim['demanda'], 'b-', linewidth=2, label='Demanda', marker='o', markersize=4)
-    ax5.plot(df_sim['dia'], df_sim['ventas'], 'g--', linewidth=2, label='Ventas', marker='s', markersize=4)
-    ax5.set_xlabel('Día')
-    ax5.set_ylabel('Litros')
-    ax5.set_title('Demanda vs Ventas')
-    ax5.legend()
-    ax5.grid(True, alpha=0.3)
-    
-    # 6. Ganancia y Flujo diario
-    ax6 = fig.add_subplot(2, 3, 6)
-    x = np.arange(len(df_sim))
-    width = 0.35
-    ax6.bar(x - width/2, df_sim['ganancia'], width, label='Ganancia', color='green', alpha=0.7)
-    ax6.bar(x + width/2, df_sim['flujo'], width, label='Flujo', color='blue', alpha=0.7)
-    ax6.set_xlabel('Día')
-    ax6.set_ylabel('$')
-    ax6.set_title('Ganancia y Flujo Diario')
-    ax6.legend()
-    ax6.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    plt.savefig('resultados_ensemble.png', dpi=150, bbox_inches='tight')
-    plt.show()
-    print("\nGráfica guardada: resultados_ensemble.png")
-
-
 # ============================================================
-# PROGRAMA PRINCIPAL
+# SIDEBAR - CONFIGURACIÓN
 # ============================================================
+st.sidebar.header("📁 1. Cargar Datos")
 
-if __name__ == "__main__":
-    
-    print("="*60)
-    print("OPTIMIZACIÓN DE INVENTARIOS - VERSIÓN ENSEMBLE")
-    print("="*60)
-    print(f"\nConfiguración:")
-    print(f"  - Archivo: {ARCHIVO_DATOS}")
-    print(f"  - Objetivo: w1={W1} (ganancia), w2={W2} (flujo)")
-    print(f"  - Arquitectura: {ARQUITECTURA}, {ACTIVACION}")
-    print(f"  - Redes en ensemble: {N_REDES_ENSEMBLE}")
-    
-    # 1. Cargar datos
-    print(f"\n{'='*60}")
-    print("CARGANDO DATOS")
-    print(f"{'='*60}")
-    
-    datos = cargar_y_preparar_datos(ARCHIVO_DATOS)
-    print(f"  Datos: {len(datos['df'])} filas")
-    print(f"  Train: {len(datos['X_train'])}, Val: {len(datos['X_val'])}, Test: {len(datos['X_test'])}")
-    
-    # 2. Crear y entrenar ensemble
-    ensemble = EnsembleRedes(
-        n_redes=N_REDES_ENSEMBLE,
-        arquitectura=ARQUITECTURA,
-        activacion=ACTIVACION
+archivo = st.sidebar.file_uploader(
+    "Subir archivo (CSV o Excel)",
+    type=['csv', 'xlsx', 'xls'],
+    help="El archivo debe tener columnas: dia, dia_semana, precio, demanda"
+)
+
+if archivo is None:
+    st.sidebar.info("Usando datos de ejemplo (365 días)")
+    usar_ejemplo = True
+else:
+    usar_ejemplo = False
+
+st.sidebar.markdown("---")
+st.sidebar.header("🎯 2. Objetivo")
+
+objetivo = st.sidebar.radio(
+    "¿Qué deseas optimizar?",
+    options=[
+        "💰 Maximizar Ganancia",
+        "💵 Maximizar Flujo",
+        "⚖️ Balance (ambos)"
+    ],
+    index=2
+)
+
+if objetivo == "⚖️ Balance (ambos)":
+    balance = st.sidebar.slider(
+        "Ajustar balance",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.5,
+        step=0.1,
+        help="0 = Solo flujo, 1 = Solo ganancia"
     )
+    w1, w2 = balance, 1 - balance
+elif objetivo == "💰 Maximizar Ganancia":
+    w1, w2 = 1.0, 0.0
+else:
+    w1, w2 = 0.0, 1.0
+
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ 3. Parámetros")
+
+with st.sidebar.expander("🧠 Ensemble de Redes", expanded=True):
+    arquitectura_str = st.text_input("Arquitectura (capas)", value="8, 8")
+    arquitectura = tuple(map(int, arquitectura_str.replace(" ", "").split(",")))
+    activacion = st.selectbox("Activación", ['relu', 'tanh', 'identity'], index=0)
+    n_redes = st.slider("Número de redes en ensemble", 3, 10, 5, 
+                        help="Más redes = más estable pero más lento")
+
+with st.sidebar.expander("🧬 Algoritmo Genético"):
+    tam_poblacion = st.slider("Tamaño población", 20, 100, 40)
+    max_generaciones = st.slider("Máx generaciones", 50, 1000, 300)
+    tolerancia = st.number_input("Tolerancia convergencia", value=0.001, format="%.4f")
+    paciencia = st.slider("Paciencia (gens sin mejora)", 10, 100, 30)
+    semilla_ga = st.number_input("Semilla del GA", value=42, min_value=0)
+
+with st.sidebar.expander("📦 Simulación"):
+    dias_sim = st.slider("Días a simular", 7, 90, 30)
+    costo_compra = st.number_input("Costo de compra ($/L)", value=20.0)
+    h = st.number_input("Costo almacenamiento ($/L/día)", value=0.002, format="%.4f")
+
+# ============================================================
+# CONTENIDO PRINCIPAL
+# ============================================================
+
+# Cargar datos
+if usar_ejemplo:
+    np.random.seed(42)
+    dias = 365
+    df = pd.DataFrame({
+        'dia': range(1, dias + 1),
+        'dia_semana': [(i % 7) + 1 for i in range(dias)],
+        'precio': 23.5 + np.cumsum(np.random.normal(0, 0.05, dias)),
+        'demanda': 10000 + np.random.normal(0, 2000, dias) + 2000 * np.sin(np.arange(dias) * 2 * np.pi / 7)
+    })
+    df['demanda'] = df['demanda'].clip(3000, 18000)
+else:
+    df = cargar_datos(archivo)
+
+# Mostrar datos
+col1, col2 = st.columns([1, 2])
+
+with col1:
+    st.subheader("📊 Datos Cargados")
+    st.write(f"**Filas:** {len(df)}")
+    st.write(f"**Columnas:** {list(df.columns)}")
+    st.dataframe(df.head(10), height=300)
+
+with col2:
+    st.subheader("📈 Vista Previa")
+    fig = px.line(df, x='dia', y='demanda', title='Demanda Histórica')
+    fig.update_layout(height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("---")
+
+# Botón para ejecutar
+col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+with col_btn2:
+    ejecutar = st.button("🚀 EJECUTAR OPTIMIZACIÓN", type="primary", use_container_width=True)
+
+if ejecutar:
+    st.markdown("---")
+    
+    # Preparar datos
+    datos = preparar_datos(df)
+    
+    # ============================================================
+    # PASO 1: ENTRENAR ENSEMBLE
+    # ============================================================
+    st.subheader("🧠 Paso 1: Entrenamiento del Ensemble")
+    st.write(f"Entrenando {n_redes} redes neuronales con semillas aleatorias...")
+    
+    progress_ensemble = st.progress(0)
+    status_ensemble = st.empty()
+    
+    ensemble = EnsembleRedes(
+        n_redes=n_redes,
+        arquitectura=arquitectura,
+        activacion=activacion
+    )
+    
+    resultados_redes = []
+    
+    def callback_ensemble(actual, total, semilla, mse):
+        progress_ensemble.progress(actual / total)
+        status_ensemble.text(f"Red {actual}/{total} (semilla {semilla}): MSE={mse:.4f}")
+        resultados_redes.append({'Red': actual, 'Semilla': semilla, 'MSE': mse})
     
     mse_ensemble = ensemble.entrenar(
         datos['X_train'], datos['Y_train'],
-        datos['X_val'], datos['Y_val']
+        datos['X_val'], datos['Y_val'],
+        progress_callback=callback_ensemble
     )
     
-    # 3. Ejecutar Algoritmo Genético
+    progress_ensemble.progress(1.0)
+    
+    # Mostrar resultados del ensemble
+    col_e1, col_e2 = st.columns([1, 2])
+    
+    with col_e1:
+        st.success(f"✓ Ensemble entrenado ({n_redes} redes)")
+        st.write(f"**MSE Ensemble:** {mse_ensemble:.4f}")
+        st.write(f"**MSE Promedio Individual:** {np.mean(ensemble.mse_individual):.4f}")
+        st.write(f"**Semillas usadas:** {ensemble.semillas_usadas}")
+    
+    with col_e2:
+        df_redes = pd.DataFrame(resultados_redes)
+        fig_redes = px.bar(df_redes, x='Red', y='MSE', 
+                          title='MSE de cada Red en el Ensemble',
+                          text='Semilla')
+        fig_redes.add_hline(y=mse_ensemble, line_dash="dash", line_color="red",
+                           annotation_text=f"Ensemble: {mse_ensemble:.4f}")
+        fig_redes.update_layout(height=250)
+        st.plotly_chart(fig_redes, use_container_width=True)
+    
+    # ============================================================
+    # PASO 2: ALGORITMO GENÉTICO
+    # ============================================================
+    st.markdown("---")
+    st.subheader("🧬 Paso 2: Optimización con Algoritmo Genético")
+    st.write(f"**Objetivo:** w1={w1:.2f} (ganancia), w2={w2:.2f} (flujo)")
+    st.write(f"**Convergencia:** Sin mejora > {tolerancia} por {paciencia} generaciones")
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
     ga = AlgoritmoGenetico(
         ensemble,
-        w1=W1, w2=W2,
-        tam_poblacion=TAM_POBLACION,
-        max_generaciones=MAX_GENERACIONES,
-        tolerancia=TOLERANCIA,
-        paciencia=PACIENCIA,
-        costo_compra=COSTO_COMPRA,
-        h=H,
-        semilla=SEMILLA_GA
+        w1=w1, w2=w2,
+        tam_poblacion=tam_poblacion,
+        max_generaciones=max_generaciones,
+        tolerancia=tolerancia,
+        paciencia=paciencia,
+        costo_compra=costo_compra,
+        h=h,
+        semilla_ga=semilla_ga
     )
     
-    mejor, ganancia, flujo, generaciones = ga.optimizar()
+    mejor, ganancia, flujo, generaciones_usadas = ga.optimizar(progress_bar, status_text)
     
-    # 4. Simular con política óptima
-    _, _, historico_sim = simular_politica(
-        ensemble,
-        mejor['s'], mejor['S'], mejor['precio'],
-        dias=DIAS_SIMULACION,
-        costo_compra=COSTO_COMPRA,
-        h=H
-    )
+    progress_bar.progress(1.0)
     
-    # 5. Mostrar resultados
-    print(f"\n{'='*60}")
-    print("RESULTADOS FINALES")
-    print(f"{'='*60}")
-    print(f"\n*** POLÍTICA ÓPTIMA ***")
-    print(f"  s (punto reorden):    {mejor['s']:,.2f} litros")
-    print(f"  S (nivel reposición): {mejor['S']:,.2f} litros")
-    print(f"  Precio:               ${mejor['precio']:.2f}")
-    print(f"\n*** MÉTRICAS ***")
-    print(f"  Ganancia promedio:    ${ganancia:,.2f}")
-    print(f"  Flujo promedio:       ${flujo:,.2f}")
-    print(f"\n*** ENSEMBLE INFO ***")
-    print(f"  Redes usadas:         {N_REDES_ENSEMBLE}")
-    print(f"  Semillas:             {ensemble.semillas_usadas}")
-    print(f"  MSE ensemble:         {mse_ensemble:.4f}")
-    print(f"  Generaciones usadas:  {generaciones}")
+    # ============================================================
+    # RESULTADOS
+    # ============================================================
+    st.markdown("---")
+    st.subheader("🏆 Resultados de la Optimización")
     
-    # 6. Ejemplo de predicción con detalle
-    print(f"\n*** EJEMPLO DE PREDICCIÓN ***")
-    detalle = ensemble.predecir_con_detalle(1, 10000, 23.5)
-    print(f"  Input: dia_semana=1, demanda_ant=10000, precio=23.5")
-    print(f"  Predicciones individuales: {[f'{p:.0f}' for p in detalle['individuales']]}")
-    print(f"  Promedio (usado): {detalle['promedio']:,.0f}")
-    print(f"  Desv. estándar:   {detalle['std']:,.0f}")
-    print(f"  Rango:            [{detalle['min']:,.0f}, {detalle['max']:,.0f}]")
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
     
-    # 7. Graficar
-    print(f"\n{'='*60}")
-    print("GENERANDO GRÁFICAS...")
-    print(f"{'='*60}")
+    with col_r1:
+        st.metric("s (Punto Reorden)", f"{mejor['s']:,.0f} L")
+    with col_r2:
+        st.metric("S (Nivel Reposición)", f"{mejor['S']:,.0f} L")
+    with col_r3:
+        st.metric("Precio Óptimo", f"${mejor['precio']:.2f}")
+    with col_r4:
+        st.metric("Generaciones", f"{generaciones_usadas}")
     
-    graficar_resultados(ga.historial, historico_sim, mejor, ensemble)
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        st.metric("💰 Ganancia Promedio", f"${ganancia:,.2f}")
+    with col_m2:
+        st.metric("💵 Flujo Promedio", f"${flujo:,.2f}")
     
-    # 8. Guardar resultados
-    df_sim = pd.DataFrame(historico_sim)
-    df_sim.to_csv('simulacion_ensemble.csv', index=False)
-    print("Simulación guardada: simulacion_ensemble.csv")
+    # ============================================================
+    # GRÁFICAS
+    # ============================================================
+    st.markdown("---")
+    st.subheader("📊 Análisis de Resultados")
     
-    # Guardar configuración
-    config = f"""# Configuración ENSEMBLE para reproducir resultados
-# ================================================
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Evolución del AG", "📦 Simulación", "📋 Datos", "🔧 Reproducibilidad"])
+    
+    with tab1:
+        df_hist = pd.DataFrame(ga.historial)
+        
+        fig = make_subplots(rows=1, cols=2, subplot_titles=("Evolución de Ganancia", "Evolución de Flujo"))
+        
+        fig.add_trace(
+            go.Scatter(x=df_hist['generacion'], y=df_hist['mejor_ganancia'], 
+                      mode='lines', name='Ganancia', line=dict(color='green', width=2)),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=df_hist['generacion'], y=df_hist['mejor_flujo'],
+                      mode='lines', name='Flujo', line=dict(color='blue', width=2)),
+            row=1, col=2
+        )
+        
+        fig.update_layout(height=400, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with tab2:
+        _, _, historico = simular_politica(
+            ensemble,
+            mejor['s'], mejor['S'], mejor['precio'],
+            dias=dias_sim, costo_compra=costo_compra, h=h
+        )
+        df_sim = pd.DataFrame(historico)
+        
+        fig = make_subplots(rows=2, cols=2,
+                           subplot_titles=("Inventario", "Demanda vs Ventas", 
+                                          "Ganancia Diaria", "Flujo Diario"))
+        
+        fig.add_trace(
+            go.Scatter(x=df_sim['dia'], y=df_sim['inventario'], mode='lines+markers', 
+                      name='Inventario', line=dict(color='blue')),
+            row=1, col=1
+        )
+        fig.add_hline(y=mejor['s'], line_dash="dash", line_color="red", row=1, col=1, 
+                     annotation_text=f"s={mejor['s']:,.0f}")
+        fig.add_hline(y=mejor['S'], line_dash="dash", line_color="green", row=1, col=1,
+                     annotation_text=f"S={mejor['S']:,.0f}")
+        
+        fig.add_trace(
+            go.Scatter(x=df_sim['dia'], y=df_sim['demanda'], mode='lines', 
+                      name='Demanda', line=dict(color='blue')),
+            row=1, col=2
+        )
+        fig.add_trace(
+            go.Scatter(x=df_sim['dia'], y=df_sim['ventas'], mode='lines', 
+                      name='Ventas', line=dict(color='green')),
+            row=1, col=2
+        )
+        
+        fig.add_trace(
+            go.Bar(x=df_sim['dia'], y=df_sim['ganancia'], name='Ganancia', marker_color='green'),
+            row=2, col=1
+        )
+        
+        fig.add_trace(
+            go.Bar(x=df_sim['dia'], y=df_sim['flujo'], name='Flujo', marker_color='blue'),
+            row=2, col=2
+        )
+        
+        fig.update_layout(height=600, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with tab3:
+        st.write("**Histórico de Simulación:**")
+        st.dataframe(df_sim, height=400)
+        
+        csv = df_sim.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar CSV",
+            data=csv,
+            file_name="simulacion_optima.csv",
+            mime="text/csv"
+        )
+    
+    with tab4:
+        st.write("### 🔧 Información para Reproducibilidad")
+        st.write("Usa estos parámetros para obtener resultados similares:")
+        
+        codigo = f"""
+# Configuración ENSEMBLE
 
-# Ensemble de Redes
-N_REDES = {N_REDES_ENSEMBLE}
-ARQUITECTURA = {ARQUITECTURA}
-ACTIVACION = '{ACTIVACION}'
-SEMILLAS_REDES = {ensemble.semillas_usadas}
+# Redes Neuronales
+n_redes = {n_redes}
+arquitectura = {arquitectura}
+activacion = '{activacion}'
+semillas_redes = {ensemble.semillas_usadas}
 
-# Algoritmo Genético
-W1, W2 = {W1}, {W2}
-TAM_POBLACION = {TAM_POBLACION}
-TOLERANCIA = {TOLERANCIA}
-PACIENCIA = {PACIENCIA}
-SEMILLA_GA = {SEMILLA_GA}
+# Algoritmo Genético  
+w1, w2 = {w1}, {w2}
+tam_poblacion = {tam_poblacion}
+max_generaciones = {max_generaciones}
+tolerancia = {tolerancia}
+paciencia = {paciencia}
+semilla_ga = {semilla_ga}
 
-# Resultados
-# s = {mejor['s']:,.2f}
-# S = {mejor['S']:,.2f}
-# precio = {mejor['precio']:.2f}
-# ganancia_promedio = {ganancia:,.2f}
-# flujo_promedio = {flujo:,.2f}
+# Resultados obtenidos:
+# s = {mejor['s']:,.2f} litros
+# S = {mejor['S']:,.2f} litros
+# precio = ${mejor['precio']:.2f}
+# ganancia_promedio = ${ganancia:,.2f}
+# flujo_promedio = ${flujo:,.2f}
 # mse_ensemble = {mse_ensemble:.4f}
 """
-    
-    with open('configuracion_ensemble.txt', 'w') as f:
-        f.write(config)
-    print("Configuración guardada: configuracion_ensemble.txt")
-    
-    print(f"\n{'='*60}")
-    print("¡OPTIMIZACIÓN COMPLETADA!")
-    print(f"{'='*60}")
+        st.code(codigo, language='python')
+        
+        st.download_button(
+            label="📥 Descargar configuración",
+            data=codigo,
+            file_name="configuracion_ensemble.py",
+            mime="text/plain"
+        )
+        
+        # Ejemplo de predicción con detalle
+        st.markdown("---")
+        st.write("### 🔍 Ejemplo de Predicción del Ensemble")
+        detalle = ensemble.predecir_con_detalle(1, 10000, 23.5)
+        
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            st.write("**Input:** día_semana=1, demanda_ant=10,000, precio=$23.50")
+            st.write(f"**Predicción (promedio):** {detalle['promedio']:,.0f} litros")
+            st.write(f"**Desv. estándar:** {detalle['std']:,.0f} litros")
+            st.write(f"**Rango:** [{detalle['min']:,.0f}, {detalle['max']:,.0f}]")
+        
+        with col_d2:
+            df_pred = pd.DataFrame({
+                'Red': [f"Red {i+1}" for i in range(len(detalle['individuales']))],
+                'Predicción': detalle['individuales']
+            })
+            fig_pred = px.bar(df_pred, x='Red', y='Predicción', title='Predicción de cada red')
+            fig_pred.add_hline(y=detalle['promedio'], line_dash="dash", line_color="red",
+                              annotation_text=f"Promedio: {detalle['promedio']:,.0f}")
+            fig_pred.update_layout(height=250)
+            st.plotly_chart(fig_pred, use_container_width=True)
+
+# Footer
+st.markdown("---")
+st.markdown("*Desarrollado con Streamlit + scikit-learn | Versión Ensemble*")
