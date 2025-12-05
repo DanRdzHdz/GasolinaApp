@@ -89,7 +89,7 @@ def entrenar_red_con_semilla(X_train, Y_train, scaler_X, scaler_Y, arquitectura,
     return mlp
 
 def buscar_mejor_semilla(X_train, Y_train, X_val, Y_val, arquitectura, activacion, 
-                          n_intentos=20, progress_callback=None):
+                          n_intentos=20, semillas_aleatorias=True, progress_callback=None):
     """Busca la mejor semilla probando varias"""
     
     # Crear scalers
@@ -102,12 +102,18 @@ def buscar_mejor_semilla(X_train, Y_train, X_val, Y_val, arquitectura, activacio
     X_val_scaled = scaler_X.transform(X_val)
     Y_val_scaled = scaler_Y.transform(Y_val.reshape(-1, 1)).ravel()
     
+    # Generar semillas a probar
+    if semillas_aleatorias:
+        semillas = np.random.randint(0, 10000, size=n_intentos)
+    else:
+        semillas = list(range(n_intentos))
+    
     mejor_mse = float('inf')
     mejor_mlp = None
     mejor_semilla = None
     resultados_semillas = []
     
-    for i, semilla in enumerate(range(n_intentos)):
+    for i, semilla in enumerate(semillas):
         mlp = entrenar_red_con_semilla(X_train, Y_train, scaler_X, scaler_Y, 
                                         arquitectura, activacion, semilla)
         
@@ -395,6 +401,8 @@ with st.sidebar.expander("🧠 Red Neuronal", expanded=True):
     
     if buscar_semilla:
         n_semillas = st.slider("Número de semillas a probar", 5, 50, 20)
+        semillas_aleatorias = st.checkbox("Usar semillas aleatorias", value=True, 
+                                          help="Si está activo, prueba semillas aleatorias (ej: 847, 2341...). Si no, prueba 0, 1, 2, 3...")
     else:
         semilla_fija = st.number_input("Semilla fija", value=42, min_value=0)
 
@@ -462,7 +470,8 @@ if ejecutar:
     st.subheader("🧠 Paso 1: Entrenamiento de Red Neuronal")
     
     if buscar_semilla:
-        st.write(f"🔍 Buscando mejor semilla entre {n_semillas} opciones...")
+        modo_texto = "aleatorias" if semillas_aleatorias else "secuenciales (0,1,2...)"
+        st.write(f"🔍 Buscando mejor semilla entre {n_semillas} opciones ({modo_texto})...")
         
         progress_semilla = st.progress(0)
         status_semilla = st.empty()
@@ -480,6 +489,7 @@ if ejecutar:
             datos['X_val'], datos['Y_val'],
             arquitectura, activacion,
             n_intentos=n_semillas,
+            semillas_aleatorias=semillas_aleatorias,
             progress_callback=callback_semilla
         )
         
@@ -662,6 +672,12 @@ if ejecutar:
         st.write("### 🔧 Información para Reproducibilidad")
         st.write("Usa estos parámetros para obtener exactamente los mismos resultados:")
         
+        # Determinar modo de semillas para el reporte
+        if buscar_semilla:
+            modo_semillas = 'aleatorio' if semillas_aleatorias else 'secuencial'
+        else:
+            modo_semillas = 'fija'
+        
         codigo = f"""
 # Parámetros para reproducir estos resultados:
 
@@ -669,6 +685,7 @@ if ejecutar:
 arquitectura = {arquitectura}
 activacion = '{activacion}'
 semilla_red = {mejor_semilla}
+# Nota: La semilla fue encontrada usando modo {modo_semillas}
 
 # Algoritmo Genético  
 w1, w2 = {w1}, {w2}
