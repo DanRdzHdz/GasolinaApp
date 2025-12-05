@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 st.title("⛽ Optimizador de Política de Inventarios")
-st.markdown("*Versión Ensemble v2.1 - Predicciones más estables*")
+st.markdown("*Versión Ensemble v3.0 - Parámetros Fase 3 corregidos*")
 st.markdown("---")
 
 # ============================================================
@@ -168,10 +168,22 @@ class EnsembleRedes:
 
 
 def simular_politica(ensemble, s, S, precio_venta, 
-                     dias=30, costo_compra=20.0, h=0.002,
+                     dias=30, costo_compra=23.60, h=0.002,
                      inventario_inicial=10000, dia_semana_inicial=2, 
-                     demanda_inicial=10000):
-    """Simula la política de inventarios usando el ensemble"""
+                     demanda_inicial=10000, capacidad_tanque=15000):
+    """
+    Simula la política de inventarios usando el ensemble
+    
+    Parámetros económicos (Fase 3):
+    - costo_compra: $23.60 MXN/L (costo mayorista)
+    - h: 0.002 MXN/L/día (costo almacenamiento)
+    - capacidad_tanque: 15,000 L
+    
+    Cálculos:
+    - Ganancia diaria = ventas * (precio_venta - costo_compra)
+    - Flujo diario = ingresos - costo_compras - costo_inventario
+    - Promedio = suma(30 días) / 30
+    """
     inventario = inventario_inicial
     dia_semana = dia_semana_inicial
     demanda_anterior = demanda_inicial
@@ -189,17 +201,22 @@ def simular_politica(ensemble, s, S, precio_venta,
         
         compras = 0
         if inventario <= s:
-            compras = S - inventario
-            inventario = S
+            # Ordenar hasta S, pero sin exceder capacidad del tanque
+            compras = min(S - inventario, capacidad_tanque - inventario)
+            inventario += compras
         
+        # CÁLCULO DE GANANCIA:
+        # ganancia = ventas * margen = ventas * (precio - costo)
+        ganancia = ventas * (precio_venta - costo_compra)
+        
+        # CÁLCULO DE FLUJO DE EFECTIVO:
+        # flujo = ingresos - egresos
         ingresos = ventas * precio_venta
         costo_compras = compras * costo_compra
         costo_inventario = h * inventario
-        
-        ganancia = ventas * (precio_venta - costo_compra)
-        ganancias.append(ganancia)
-        
         flujo = ingresos - costo_compras - costo_inventario
+        
+        ganancias.append(ganancia)
         flujos.append(flujo)
         
         historico.append({
@@ -216,6 +233,7 @@ def simular_politica(ensemble, s, S, precio_venta,
         demanda_anterior = demanda
         dia_semana = (dia_semana % 7) + 1
     
+    # PROMEDIOS: suma de 30 días / 30
     return np.mean(ganancias), np.mean(flujos), historico
 
 
@@ -226,7 +244,7 @@ class AlgoritmoGenetico:
                  tam_poblacion=40, max_generaciones=500,
                  tolerancia=0.001, paciencia=30,
                  prob_mutacion=0.1, prob_cruce=0.8,
-                 costo_compra=20.0, h=0.002, semilla_ga=None):
+                 costo_compra=23.60, h=0.002, semilla_ga=None):
         
         self.ensemble = ensemble
         self.w1 = w1
@@ -244,9 +262,9 @@ class AlgoritmoGenetico:
             np.random.seed(semilla_ga)
         
         self.limites = {
-            's': (1000, 8000),
-            'S': (10000, 25000),
-            'precio': (22.0, 26.0)
+            's': (2000, 12000),      # Punto de reorden: 2,000 - 12,000 L
+            'S': (8000, 15000),      # Nivel reposición: 8,000 - 15,000 L
+            'precio': (23.00, 23.99) # Precio venta: $23.00 - $23.99 MXN/L
         }
         
         self.historial = []
@@ -260,7 +278,10 @@ class AlgoritmoGenetico:
     
     def evaluar(self, individuo):
         s = individuo['s']
-        S = max(s + 1000, individuo['S'])
+        S = individuo['S']
+        # Asegurar que S > s
+        if S <= s:
+            S = min(s + 1000, 15000)
         precio = individuo['precio']
         
         ganancia, flujo, _ = simular_politica(
@@ -358,7 +379,9 @@ class AlgoritmoGenetico:
             
             poblacion = nueva_poblacion
         
-        mejor_global['S'] = max(mejor_global['s'] + 1000, mejor_global['S'])
+        # Asegurar S > s
+        if mejor_global['S'] <= mejor_global['s']:
+            mejor_global['S'] = min(mejor_global['s'] + 1000, 15000)
         
         return mejor_global, mejor_ganancia_global, mejor_flujo_global, gen + 1
 
@@ -427,7 +450,7 @@ with st.sidebar.expander("🧬 Algoritmo Genético"):
 
 with st.sidebar.expander("📦 Simulación"):
     dias_sim = st.slider("Días a simular", 7, 90, 30)
-    costo_compra = st.number_input("Costo de compra ($/L)", value=20.0)
+    costo_compra = st.number_input("Costo mayorista ($/L)", value=23.60, help="Costo de compra del combustible")
     h = st.number_input("Costo almacenamiento ($/L/día)", value=0.002, format="%.4f")
 
 # ============================================================
@@ -438,13 +461,28 @@ with st.sidebar.expander("📦 Simulación"):
 if usar_ejemplo:
     np.random.seed(42)
     dias = 365
+    
+    # Precio con variación amplia
+    precio_base = 23.5
+    precio = precio_base + np.random.uniform(-1.5, 1.5, dias)
+    
+    # Demanda BASE alta
+    demanda_base = 12000 + np.random.normal(0, 500, dias) + 1500 * np.sin(np.arange(dias) * 2 * np.pi / 7)
+    
+    # ELASTICIDAD MUY FUERTE: por cada $1 arriba, demanda baja 5000 litros
+    # Esto fuerza un precio óptimo intermedio, no en el extremo
+    elasticidad = -5000  # litros por dólar
+    efecto_precio = elasticidad * (precio - precio_base)
+    
+    demanda = demanda_base + efecto_precio
+    demanda = np.clip(demanda, 2000, 20000)
+    
     df = pd.DataFrame({
         'dia': range(1, dias + 1),
         'dia_semana': [(i % 7) + 1 for i in range(dias)],
-        'precio': 23.5 + np.cumsum(np.random.normal(0, 0.05, dias)),
-        'demanda': 10000 + np.random.normal(0, 2000, dias) + 2000 * np.sin(np.arange(dias) * 2 * np.pi / 7)
+        'precio': precio,
+        'demanda': demanda
     })
-    df['demanda'] = df['demanda'].clip(3000, 18000)
 else:
     df = cargar_datos(archivo)
 
