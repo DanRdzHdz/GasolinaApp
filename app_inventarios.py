@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import warnings
+import time
 warnings.filterwarnings('ignore')
 
 # ============================================================
@@ -104,7 +105,7 @@ def buscar_mejor_semilla(X_train, Y_train, X_val, Y_val, arquitectura, activacio
     
     # Generar semillas a probar
     if semillas_aleatorias:
-        semillas = np.random.randint(0, 10000, size=n_intentos)
+        semillas = np.random.default_rng(int(time.time())).integers(0, 10000, size=n_intentos)
     else:
         semillas = list(range(n_intentos))
     
